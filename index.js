@@ -1,8 +1,10 @@
 const express = require('express');
 const cors = require('cors');
-const { MongoClient, ServerApiVersion } = require('mongodb');
+const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const dotenv = require('dotenv');
 dotenv.config();
+const stripe = require('stripe')(process.env.PAYMENT_GATEWAY_KEY);
+
 const app = express();
 const port = process.env.PORT || 3000;
 //middlewares
@@ -30,19 +32,20 @@ async function run() {
     const db = client.db('parcelDB');
     const parcelCollection = db.collection('parcels');
     //get all parcels
-    app.get('/parcels', async (req, res) => {
-      const parcels = await parcelCollection.find().toArray();
-      res.send(parcels);
-    });
+    // app.get('/parcels', async (req, res) => {
+    //   const parcels = await parcelCollection.find().toArray();
+    //   res.send(parcels);
+    // });
 
     //parcel api get
     app.get('/parcels', async (req, res) => {
       try {
         const email = req.query.email; // ?email=
+        console.log('Email query parameter:', email);
         const query = email
           ? { created_by: email } // ই‑মেইল থাকলে ফিল্টার
           : {}; // না থাকলে সব ডকুমেন্ট
-
+        console.log('Query:', query);
         const parcels = await parcelCollection
           .find(query)
           .sort({ creation_date: -1 }) // DESC sort
@@ -76,6 +79,71 @@ async function run() {
           .send({ message: 'Failed to add parcel', error: error.message });
       }
     });
+
+    //delete my parcel
+    app.delete('/parcels/:id', async (req, res) => {
+      try {
+        const id = req.params.id; // URL থেকে parcel ID নেওয়া
+        const query = { _id: new ObjectId(id) }; // ObjectId টাইপে কনভার্ট করা
+        const result = await parcelCollection.deleteOne(query); // ডিলিট করা
+
+        if (result.deletedCount === 1) {
+          res.send({ success: true, message: 'Parcel deleted' });
+        } else {
+          res.status(404).send({ success: false, message: 'Parcel not found' });
+        }
+      } catch (error) {
+        console.error('Error deleting parcel:', error);
+        res.status(500).send({ message: 'Failed to delete parcel' });
+      }
+    });
+
+    // get parcel by ID
+    app.get('/parcels/:id', async (req, res) => {
+      try {
+        const id = req.params.id;
+        const parcel = await parcelCollection.findOne({
+          _id: new ObjectId(id),
+        });
+
+        if (!parcel) {
+          return res.status(404).send({ message: 'Parcel not found' });
+        }
+
+        res.send(parcel);
+      } catch (error) {
+        console.error('Error getting parcel by ID:', error);
+        res
+          .status(500)
+          .send({ message: 'Failed to get parcel', error: error.message });
+      }
+    });
+
+    // 💳 Create Payment Intent
+    // ⬇︎ পরিবর্তিত /create-payment-intent রাউট
+    app.post('/create-payment-intent', async (req, res) => {
+      const amountInCents = parseInt(req.body.amountInCents, 10); // নিশ্চিত করো integer
+
+      if (!amountInCents) {
+        return res
+          .status(400)
+          .send({ error: 'amountInCents missing or invalid' });
+      }
+
+      try {
+        const paymentIntent = await stripe.paymentIntents.create({
+          amount: amountInCents, // 🟢 সঠিক ফিল্ড নাম
+          currency: 'usd', // 'usd' টেস্টে OK, 'bdt' এখনো GA নয়
+          automatic_payment_methods: { enabled: true }, // চাইলে রাখো
+        });
+
+        res.send({ clientSecret: paymentIntent.client_secret });
+      } catch (err) {
+        console.error('Stripe error:', err);
+        res.status(500).send({ error: err.message });
+      }
+    });
+
     // Send a ping to confirm a successful connection
     await client.db('admin').command({ ping: 1 });
     console.log(

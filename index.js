@@ -31,6 +31,7 @@ async function run() {
     //db Create
     const db = client.db('parcelDB');
     const parcelCollection = db.collection('parcels');
+    const paymentCollection = db.collection('payments');
     //get all parcels
     // app.get('/parcels', async (req, res) => {
     //   const parcels = await parcelCollection.find().toArray();
@@ -141,6 +142,75 @@ async function run() {
       } catch (err) {
         console.error('Stripe error:', err);
         res.status(500).send({ error: err.message });
+      }
+    });
+
+    // GET: payment history (user email → own, else all)  ✅
+    app.get('/payments', async (req, res) => {
+      try {
+        const userEmail = req.query.email; // ?email=user@mail.com
+        const query = userEmail ? { email: userEmail } : {}; // filter or all
+
+        /* DESC sort latest‑first */
+        const payments = await paymentCollection
+          .find(query)
+          .sort({ paid_at: -1 }) // 🔹 correct field + syntax
+          .toArray();
+
+        res.send(payments);
+      } catch (error) {
+        console.error('Error fetching payment history:', error);
+        res.status(500).send({ message: 'Failed to get payments' });
+      }
+    });
+
+    /* ---------- record payment + mark parcel paid ---------- */
+    /*POST ---------- record payment & mark parcel paid ---------- */
+    app.post('/payments', async (req, res) => {
+      /* 1. body destructure + validation */
+      const { parcelId, email, amount, paymentMethod, transactionId } =
+        req.body;
+
+      if (!parcelId || !email || !amount) {
+        return res
+          .status(400)
+          .send({ message: 'parcelId, email, and amount are required' });
+      }
+
+      try {
+        /* 2. update parcel → payment_status: 'paid' */
+        const updateResult = await parcelCollection.updateOne(
+          { _id: new ObjectId(parcelId) },
+          { $set: { payment_status: 'paid' } } // ← $set জরুরি
+        );
+
+        if (updateResult.matchedCount === 0) {
+          return res
+            .status(404)
+            .send({ message: 'Parcel not found or already paid' });
+        }
+
+        /* 3. insert payment record */
+        const paymentDoc = {
+          parcelId: new ObjectId(parcelId),
+          email,
+          amount,
+          paymentMethod,
+          transactionId,
+          paid_at_string: new Date().toISOString(),
+          paidAt: new Date(),
+        };
+
+        const paymentResult = await paymentCollection.insertOne(paymentDoc);
+
+        /* 4. success response */
+        return res.status(201).send({
+          message: 'Payment recorded and parcel marked as paid',
+          insertedId: paymentResult.insertedId,
+        });
+      } catch (error) {
+        console.error('Payment processing failed:', error);
+        return res.status(500).send({ message: 'Failed to record payment' });
       }
     });
 

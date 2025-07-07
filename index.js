@@ -338,16 +338,45 @@ async function run() {
 
     //riders status
     // PATCH /riders/:id  { status: 'active' | 'rejected' }
-    app.patch('/riders/:id', async (req, res) => {
+    // PATCH /riders/:id/status
+    app.patch('/riders/:id/status', async (req, res) => {
       const { id } = req.params;
-      const { status } = req.body;
+      const { status, email } = req.body;
+
+      // 0️⃣  status ভ্যালিড কি না চেক করা ভাল
+      const allowed = ['active', 'rejected', 'inactive'];
+      if (!allowed.includes(status)) {
+        return res.status(400).send({ message: 'Invalid status value' });
+      }
+
       try {
-        const result = await ridersCollection.updateOne(
+        /* 1️⃣ rider status আপডেট */
+        const riderResult = await ridersCollection.updateOne(
           { _id: new ObjectId(id) },
           { $set: { status } }
         );
-        res.send(result);
+
+        if (riderResult.matchedCount === 0) {
+          return res.status(404).send({ message: 'Rider not found' });
+        }
+
+        /* 2️⃣  status === 'active' হলে User role = 'rider' */
+        let roleResult = null;
+        if (status === 'active' && email) {
+          roleResult = await usersCollection.updateOne(
+            { email },
+            { $set: { role: 'rider' } }
+          );
+        }
+
+        /* 3️⃣  success response */
+        res.send({
+          modified: riderResult.modifiedCount,
+          riderId: id,
+          roleUpdated: roleResult?.modifiedCount || 0,
+        });
       } catch (err) {
+        console.error('Rider status update error:', err);
         res.status(500).send({ message: 'Failed to update status' });
       }
     });
@@ -409,6 +438,6 @@ app.get('/', (req, res) => {
   res.json('Welcome to Zap Shift Server');
 });
 // start server
-// app.listen(port, () => {
-//   console.log(`Server is running on port ${port}`);
-// });
+app.listen(port, () => {
+  console.log(`Server is running on port ${port}`);
+});

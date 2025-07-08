@@ -421,6 +421,68 @@ async function run() {
     //   }
     // });
 
+    // // [GET] Search users by email
+
+    // [GET] /users/search?email=john&limit=10
+    app.get('/users/search', async (req, res) => {
+      const emailQuery = req.query.email || '';
+      const limit = parseInt(req.query.limit, 10) || 10; // ডিফল্ট 10
+
+      // সাম negative বা NaN হলে fallback
+      const safeLimit = limit > 0 && limit <= 100 ? limit : 10;
+
+      if (!emailQuery.trim()) {
+        return res.status(400).json({ message: 'Missing email query' });
+      }
+
+      const regex = new RegExp(emailQuery, 'i'); // case‑insensitive, partial
+
+      try {
+        const users = await usersCollection
+          .find(
+            { email: { $regex: regex } },
+            { projection: { email: 1, role: 1, created_at: 1 } }
+          )
+          .sort({ created_at: -1 }) // নতুন আগে চাইলে
+          .limit(safeLimit) // 🔹 লিমিট!
+          .toArray();
+
+        res.json(users);
+      } catch (err) {
+        console.error('User search error:', err);
+        res.status(500).json({ message: 'Something went wrong' });
+      }
+    });
+
+    // [PATCH] /users/:id/role
+    app.patch('/users/:id/role', async (req, res) => {
+      const { id } = req.params;
+      const { role } = req.body;
+
+      // নিরাপদ role চেক
+      if (!['admin', 'user'].includes(role)) {
+        return res.status(400).json({ message: 'Invalid role' });
+      }
+
+      try {
+        const result = await usersCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { role } }
+        );
+
+        if (result.modifiedCount > 0) {
+          res.send({ message: `User role updated to ${role}`, result });
+        } else {
+          res
+            .status(404)
+            .json({ message: 'User not found or already has this role' });
+        }
+      } catch (error) {
+        console.error('Error updating role:', error);
+        res.status(500).json({ message: 'Failed to update role' });
+      }
+    });
+
     // Send a ping to confirm a successful connection
     await client.db('admin').command({ ping: 1 });
     console.log(

@@ -72,6 +72,30 @@ async function run() {
       // ✅ রিকোয়েস্ট পরের হ্যান্ডলারকে দিন
     };
 
+    // verify admin
+    const verifyAdmin = async (req, res, next) => {
+      try {
+        const email = req.decoded?.email;
+        if (!email) {
+          return res.status(401).send({ message: 'Unauthorized' });
+        }
+
+        const user = await usersCollection.findOne({ email });
+
+        if (!user || user.role !== 'admin') {
+          return res.status(403).send({ message: 'Forbidden: Admins only' });
+        }
+
+        // চাইলে রোল পরের রুটেও পাঠাতে পারো
+        req.userRole = 'admin';
+
+        next();
+      } catch (err) {
+        console.error('verifyAdmin error:', err);
+        res.status(500).send({ message: 'Server error during admin check' });
+      }
+    };
+
     //user apis
     app.post('/users', async (req, res) => {
       try {
@@ -132,18 +156,21 @@ async function run() {
     // });
 
     //parcel api get
+    // 📁 [GET] /parcels?email=...&payment_status=...&delivery_status=...
     app.get('/parcels', verifyFBToken, async (req, res) => {
       try {
-        const email = req.query.email; // ?email=
-        console.log('Email query parameter:', email);
+        const { email, payment_status, delivery_status } = req.query;
 
-        const query = email
-          ? { created_by: email } // ই‑মেইল থাকলে ফিল্টার
-          : {}; // না থাকলে সব ডকুমেন্ট
-        console.log('Query:', query);
+        // 🔍 Build dynamic query
+        const query = {};
+        if (email) query.created_by = email;
+        if (payment_status) query.payment_status = payment_status;
+        if (delivery_status) query.delivery_status = delivery_status;
+
+        // 📦 Fetch parcels with optional filters
         const parcels = await parcelCollection
           .find(query)
-          .sort({ creation_date: -1 }) // DESC sort
+          .sort({ creation_date: -1 }) // Descending order by date
           .toArray();
 
         res.send(parcels);
@@ -322,7 +349,7 @@ async function run() {
     });
 
     // GET /riders/pending
-    app.get('/riders/pending', async (req, res) => {
+    app.get('/riders/pending', verifyFBToken, verifyAdmin, async (req, res) => {
       try {
         const pendingRiders = await ridersCollection
           .find({ status: 'pending' })
@@ -382,7 +409,7 @@ async function run() {
     });
 
     //riders active
-    app.get('/riders/active', async (req, res) => {
+    app.get('/riders/active', verifyFBToken, verifyAdmin, async (req, res) => {
       const result = await ridersCollection
         .find({ status: 'active' })
         .toArray();
@@ -455,33 +482,38 @@ async function run() {
     });
 
     // [PATCH] /users/:id/role
-    app.patch('/users/:id/role', async (req, res) => {
-      const { id } = req.params;
-      const { role } = req.body;
+    app.patch(
+      '/users/:id/role',
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        const { id } = req.params;
+        const { role } = req.body;
 
-      // নিরাপদ role চেক
-      if (!['admin', 'user'].includes(role)) {
-        return res.status(400).json({ message: 'Invalid role' });
-      }
-
-      try {
-        const result = await usersCollection.updateOne(
-          { _id: new ObjectId(id) },
-          { $set: { role } }
-        );
-
-        if (result.modifiedCount > 0) {
-          res.send({ message: `User role updated to ${role}`, result });
-        } else {
-          res
-            .status(404)
-            .json({ message: 'User not found or already has this role' });
+        // নিরাপদ role চেক
+        if (!['admin', 'user'].includes(role)) {
+          return res.status(400).json({ message: 'Invalid role' });
         }
-      } catch (error) {
-        console.error('Error updating role:', error);
-        res.status(500).json({ message: 'Failed to update role' });
+
+        try {
+          const result = await usersCollection.updateOne(
+            { _id: new ObjectId(id) },
+            { $set: { role } }
+          );
+
+          if (result.modifiedCount > 0) {
+            res.send({ message: `User role updated to ${role}`, result });
+          } else {
+            res
+              .status(404)
+              .json({ message: 'User not found or already has this role' });
+          }
+        } catch (error) {
+          console.error('Error updating role:', error);
+          res.status(500).json({ message: 'Failed to update role' });
+        }
       }
-    });
+    );
 
     //GET: Get user role by email
     app.get('/users/:email/role', async (req, res) => {
@@ -504,6 +536,64 @@ async function run() {
         res
           .status(500)
           .send({ message: 'Failed to fetch role', error: error.message });
+      }
+    });
+
+    //  riders available
+    // PATCH assign rider to parcel
+    /* ---------- 1. GET /riders/available ---------- */
+    //  ➜  http://localhost:3000/riders/available?district=Brahmanbaria
+    app.get('/riders/available', async (req, res) => {
+      const { district } = req.query;
+      try {
+        const riders = await ridersCollection
+          .find({
+            district, // exact match with parcel.senderService
+            status: { $in: ['approved', 'active'] },
+            work_status: 'available',
+          })
+          .toArray();
+
+        res.send(riders);
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ message: 'Failed to load riders' });
+      }
+    });
+
+    /* ---------- 2. PATCH /parcels/:id/assign ---------- */
+    //  body: { riderId, riderName }
+    app.patch('/parcels/:id/assign', async (req, res) => {
+      const { id } = req.params;
+      const { riderId, riderName } = req.body;
+
+      try {
+        /* 2‑A. update parcel */
+        const parcelRes = await parcelCollection.updateOne(
+          { _id: new ObjectId(id) },
+          {
+            $set: {
+              delivery_status: 'in_transit',
+              assigned_rider_id: riderId,
+              assigned_rider_name: riderName,
+              assigned_at: new Date(),
+            },
+          }
+        );
+
+        if (parcelRes.matchedCount === 0)
+          return res.status(404).send({ message: 'Parcel not found' });
+
+        /* 2‑B. update rider status */
+        await ridersCollection.updateOne(
+          { _id: new ObjectId(riderId) },
+          { $set: { work_status: 'in_delivery' } }
+        );
+
+        res.send({ modified: parcelRes.modifiedCount });
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ message: 'Failed to assign rider' });
       }
     });
 

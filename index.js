@@ -483,6 +483,30 @@ async function run() {
       }
     });
 
+    //GET: Get user role by email
+    app.get('/users/:email/role', async (req, res) => {
+      try {
+        const email = req.params.email;
+
+        if (!email) {
+          return res.status(400).send({ message: 'Email is required' });
+        }
+
+        const user = await usersCollection.findOne({ email });
+
+        if (!user) {
+          return res.status(404).send({ message: 'User not found' });
+        }
+
+        // role না থাকলে default 'user' রিটার্ন করবে
+        res.send({ role: user.role || 'user' });
+      } catch (error) {
+        res
+          .status(500)
+          .send({ message: 'Failed to fetch role', error: error.message });
+      }
+    });
+
     // Send a ping to confirm a successful connection
     await client.db('admin').command({ ping: 1 });
     console.log(

@@ -380,7 +380,12 @@ async function run() {
         /* 1️⃣ rider status আপডেট */
         const riderResult = await ridersCollection.updateOne(
           { _id: new ObjectId(id) },
-          { $set: { status } }
+          {
+            $set: {
+              status: status,
+              work_status: 'available',
+            },
+          }
         );
 
         if (riderResult.matchedCount === 0) {
@@ -552,7 +557,9 @@ async function run() {
             status: { $in: ['approved', 'active'] },
             work_status: 'available',
           })
+
           .toArray();
+        console.log(district);
 
         res.send(riders);
       } catch (err) {

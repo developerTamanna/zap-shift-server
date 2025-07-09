@@ -572,7 +572,7 @@ async function run() {
     //  body: { riderId, riderName }
     app.patch('/parcels/:id/assign', async (req, res) => {
       const { id } = req.params;
-      const { riderId, riderName } = req.body;
+      const { riderId, riderName, riderEmail } = req.body;
 
       try {
         /* 2‑A. update parcel */
@@ -580,9 +580,10 @@ async function run() {
           { _id: new ObjectId(id) },
           {
             $set: {
-              delivery_status: 'in_transit',
+              delivery_status: 'rider-assigned',
               assigned_rider_id: riderId,
               assigned_rider_name: riderName,
+              assigned_rider_email: riderEmail,
               assigned_at: new Date(),
             },
           }
@@ -601,6 +602,59 @@ async function run() {
       } catch (err) {
         console.error(err);
         res.status(500).send({ message: 'Failed to assign rider' });
+      }
+    });
+
+    // GET /parcels/rider-tasks?email=<riderEmail>
+
+    /* ---------- rider specific tasks ---------- */
+    app.get('/rider/parcels', verifyFBToken, async (req, res) => {
+      const riderEmail = req.query.email;
+      if (!riderEmail)
+        return res.status(400).send({ message: 'Missing rider email.' });
+
+      // 👉 দুই স্পেলিংই underscore
+      const filter = {
+        assigned_rider_email: riderEmail,
+        delivery_status: { $in: ['rider-assigned', 'in_transit'] },
+      };
+
+      try {
+        const tasks = await parcelCollection
+          .find(filter)
+          .sort({ creation_date: -1 })
+          .toArray();
+        res.send(tasks);
+      } catch (err) {
+        console.error('Failed to fetch rider tasks:', err);
+        res.status(500).send({ message: 'Internal server error' });
+      }
+    });
+
+    /* ---------- PATCH: update parcel status ---------- */
+    app.patch('/parcels/:id/status', async (req, res) => {
+      const { id } = req.params;
+      const { status } = req.body; // expected: 'in_transit' | 'delivered'
+
+      if (!['in_transit', 'delivered'].includes(status))
+        return res.status(400).send({ message: 'Invalid status value' });
+
+      try {
+        const result = await parcelCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { delivery_status: status } }
+        );
+
+        if (result.matchedCount === 0)
+          return res.status(404).send({ message: 'Parcel not found' });
+
+        res.send({
+          message: 'Status updated',
+          modifiedCount: result.modifiedCount,
+        });
+      } catch (err) {
+        console.error('Update status error:', err);
+        res.status(500).send({ message: 'Failed to update status' });
       }
     });
 
